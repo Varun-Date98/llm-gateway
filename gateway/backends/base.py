@@ -14,7 +14,7 @@ class Backend(Protocol):
     replica_id: str
     tier: str
 
-    async def generate(self, request: GenerationRequest) -> AsyncIterator[Token]:
+    def generate(self, request: GenerationRequest) -> AsyncIterator[Token]:
         """Stream generated tokens for a request."""
         ...
 

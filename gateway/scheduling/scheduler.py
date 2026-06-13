@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 
 from gateway.backends.base import Backend
 from gateway.backends.registry import NoHealthyReplicaError, ReplicaPool
+from gateway.observability import metrics
 from gateway.routing.base import Router
 from gateway.scheduling.admission import (
     AdmissionController,
@@ -56,7 +57,7 @@ class ScheduledStream:
     async def stream(self) -> AsyncIterator[Token]:
         while True:
             item = await self._items.get()
-            if item is END_OF_STREAM:
+            if isinstance(item, _EndOfStream):
                 return
             if isinstance(item, BaseException):
                 raise item
@@ -127,12 +128,14 @@ class Scheduler:
             has_capacity=self._has_capacity(request),
             estimated_wait_ms=self._estimate_wait_ms(),
         )
-        
+        metrics.record_admission(result.decision.value, result.reason)
+
         if result.decision is AdmissionDecision.SHED:
             raise AdmissionRejected(result)
 
         stream = ScheduledStream(request=request, admission=result)
         await self.queue.put(request, payload=stream)
+        metrics.set_queue_depth(self.queue.qsize())
         return stream
 
     async def _dispatch_loop(self) -> None:
@@ -147,6 +150,7 @@ class Scheduler:
                 await asyncio.sleep(0)
             finally:
                 self.queue.task_done()
+                metrics.set_queue_depth(self.queue.qsize())
 
     def _stream_from_item(self, item: QueuedRequest) -> ScheduledStream:
         if not isinstance(item.payload, ScheduledStream):
@@ -169,13 +173,40 @@ class Scheduler:
     ) -> None:
         stream.started_at = time.monotonic()
         stream.backend_id = backend.replica_id
+        first_token_at: float | None = None
+        final_token: Token | None = None
         try:
             async for token in backend.generate(item.request):
+                if first_token_at is None:
+                    first_token_at = time.monotonic()
+                    metrics.record_first_token(token, first_token_at - stream.started_at)
+                    metrics.record_prompt_tokens(
+                        token.model_id,
+                        token.replica_id,
+                        token.prompt_tokens or 0,
+                    )
+                final_token = token
+                metrics.record_token(token)
+                metrics.set_in_flight(
+                    backend.model_id,
+                    backend.replica_id,
+                    backend.tier,
+                    backend.in_flight,
+                )
                 await stream.send(token)
             self._record_routing_affinity(item.request, backend)
+            if final_token is not None:
+                metrics.record_generation(final_token, time.monotonic() - stream.started_at)
             await stream.close()
         except BaseException as error:
             await stream.fail(error)
+        finally:
+            metrics.set_in_flight(
+                backend.model_id,
+                backend.replica_id,
+                backend.tier,
+                backend.in_flight,
+            )
 
     def _record_routing_affinity(self, request: GenerationRequest, backend: Backend) -> None:
         recorder = getattr(self.router, "record", None)
