@@ -1,6 +1,9 @@
+import asyncio
+
+import pytest
 from fastapi.testclient import TestClient
 
-from gateway.server import create_app
+from gateway.server import build_runtime, create_app, refresh_health_loop
 
 
 def test_health_endpoint_reports_running_scheduler() -> None:
@@ -79,3 +82,34 @@ def test_metrics_endpoint_exposes_gateway_metrics_after_request() -> None:
     assert "gateway_admission_total" in body
     assert "gateway_tokens_total" in body
     assert "gateway_ttft_seconds" in body
+
+
+def test_lifespan_starts_health_task_before_serving_and_cancels_on_shutdown() -> None:
+    with TestClient(create_app()) as client:
+        runtime = client.app.state.gateway
+        assert runtime.scheduler.is_running is True
+        assert runtime.health_task is not None
+        assert runtime.health_task.done() is False
+
+    assert runtime.health_task.done() is True
+
+
+@pytest.mark.asyncio
+async def test_health_loop_marks_failing_replica_unhealthy() -> None:
+    runtime = build_runtime()
+    runtime.config.health.refresh_interval_seconds = 0.01
+    replica = runtime.pool.get("mock-small-0")
+    replica.set_healthy(False)
+
+    task = asyncio.create_task(refresh_health_loop(runtime))
+    for _ in range(20):
+        if runtime.pool.is_healthy("mock-small-0") is False:
+            break
+        await asyncio.sleep(0.01)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    assert runtime.pool.is_healthy("mock-small-0") is False

@@ -31,6 +31,11 @@ admission:
   max_queue_depth: 256
   target_p99_ms: 2000
   shed_when_queue_full: true
+  default_service_time_ms: 250
+  service_time_ewma_alpha: 0.2
+
+health:
+  refresh_interval_seconds: 5
 
 scheduling:
   priorities:

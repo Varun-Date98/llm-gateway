@@ -49,9 +49,13 @@ async def test_mock_backend_tracks_in_flight_during_generation() -> None:
     )
 
     async def consume() -> None:
-        async for _ in backend.generate(make_request(max_tokens=1)):
-            pass
+        try:
+            async for _ in backend.generate(make_request(max_tokens=1)):
+                pass
+        finally:
+            backend.release()
 
+    assert backend.reserve() is True
     task = asyncio.create_task(consume())
     await asyncio.sleep(0)
 

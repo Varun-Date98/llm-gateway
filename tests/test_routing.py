@@ -102,8 +102,12 @@ def test_prefix_aware_router_falls_back_when_cached_replica_is_unhealthy() -> No
 
 async def consume_one_request(pool: ReplicaPool, replica_id: str) -> None:
     replica = pool.get(replica_id)
-    async for _ in replica.generate(make_request("busy replica", max_tokens=1)):
-        pass
+    assert replica.reserve() is True
+    try:
+        async for _ in replica.generate(make_request("busy replica", max_tokens=1)):
+            pass
+    finally:
+        replica.release()
 
 
 def test_prefix_aware_router_falls_back_when_affinity_would_hotspot() -> None:

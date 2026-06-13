@@ -68,6 +68,14 @@ class AdmissionConfig(BaseModel):
     max_queue_depth: int = Field(default=256, ge=0)
     target_p99_ms: int = Field(default=2000, ge=1)
     shed_when_queue_full: bool = True
+    default_service_time_ms: float = Field(default=250.0, gt=0.0)
+    service_time_ewma_alpha: float = Field(default=0.2, gt=0.0, le=1.0)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class HealthConfig(BaseModel):
+    refresh_interval_seconds: float = Field(default=5.0, gt=0.0)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -117,6 +125,7 @@ class GatewayConfig(BaseModel):
     models: dict[str, ModelConfig]
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
     admission: AdmissionConfig = Field(default_factory=AdmissionConfig)
+    health: HealthConfig = Field(default_factory=HealthConfig)
     scheduling: SchedulingConfig = Field(default_factory=SchedulingConfig)
     prefix_cache: PrefixCacheConfig = Field(default_factory=PrefixCacheConfig)
     metrics: MetricsConfig = Field(default_factory=MetricsConfig)

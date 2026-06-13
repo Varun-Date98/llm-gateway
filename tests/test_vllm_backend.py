@@ -54,6 +54,7 @@ async def test_vllm_backend_streams_openai_sse_chunks() -> None:
     assert [token.text for token in tokens] == ["hello", "!"]
     assert tokens[-1].finish_reason == "stop"
     assert backend.in_flight == 0
+    await backend.close()
 
 
 @pytest.mark.asyncio
@@ -76,6 +77,35 @@ async def test_vllm_backend_health_falls_back_to_models_endpoint() -> None:
 
     assert await backend.health() is True
     assert backend.has_capacity is True
+    await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_vllm_backend_reuses_shared_client_and_closes_it() -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"data": []})
+
+    backend = VllmBackend(
+        model_id="llama-test",
+        replica_id="llama-test-0",
+        tier="small",
+        endpoint="http://vllm.test",
+        max_concurrency=2,
+        transport=httpx.MockTransport(handler),
+    )
+    client_id = id(backend._client)
+
+    assert await backend.health() is True
+    assert await backend.health() is True
+    assert id(backend._client) == client_id
+    assert calls == 2
+
+    await backend.close()
+    assert backend._client.is_closed
 
 
 def test_registry_builds_vllm_replicas_from_config() -> None:

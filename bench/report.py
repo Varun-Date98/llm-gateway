@@ -34,6 +34,9 @@ def summarize(results: dict[str, Any]) -> list[dict[str, Any]]:
         summaries.append(
             {
                 "scenario": scenario_config.get("name", "unknown"),
+                "sweep": scenario_config.get("sweep", "default"),
+                "policy": scenario_config.get("policy", "smart"),
+                "workload": scenario_config.get("workload", "unknown"),
                 "arrival_rate_rps": scenario_config.get("arrival_rate_rps", 0),
                 "requests": len(requests),
                 "successes": len(successes),
@@ -87,17 +90,21 @@ def write_markdown_summary(summaries: list[dict[str, Any]], output_path: Path) -
     lines = [
         "# Benchmark Summary",
         "",
-        "| Scenario | Requests | Successes | P99 latency (s) | P99 TTFT (s) | Cost / 1M tokens |",
-        "|---|---:|---:|---:|---:|---:|",
+        (
+            "| Sweep | RPS | Requests | Successes | P99 latency (s) | "
+            "P99 TTFT (s) | Cost / 1M tokens |"
+        ),
+        "|---|---:|---:|---:|---:|---:|---:|",
     ]
     for summary in summaries:
         row = (
-            "| {scenario} | {requests} | {successes} | "
+            "| {sweep} | {rps} | {requests} | {successes} | "
             "{p99_latency_s} | {p99_ttft_s} | {cost} |"
         )
         lines.append(
             row.format(
-                scenario=summary["scenario"],
+                sweep=summary["sweep"],
+                rps=format_number(summary["arrival_rate_rps"]),
                 requests=summary["requests"],
                 successes=summary["successes"],
                 p99_latency_s=format_number(summary["p99_latency_s"]),
@@ -115,22 +122,48 @@ def write_plots(summaries: list[dict[str, Any]], output_dir: Path) -> list[Path]
         return []
 
     written: list[Path] = []
-    scenarios = [summary["scenario"] for summary in summaries]
-    p99 = [summary["p99_latency_s"] or 0 for summary in summaries]
-    costs = [summary["cost_per_1m_tokens_usd"] or 0 for summary in summaries]
+    by_sweep = group_by_sweep(summaries)
 
     plt.figure(figsize=(10, 5))
-    plt.bar(scenarios, p99)
+    for sweep, rows in by_sweep.items():
+        ordered = sorted(rows, key=lambda row: row["arrival_rate_rps"])
+        plt.plot(
+            [row["arrival_rate_rps"] for row in ordered],
+            [row["p99_latency_s"] or 0 for row in ordered],
+            marker="o",
+            label=sweep,
+        )
+    plt.xlabel("Offered load (RPS)")
     plt.ylabel("P99 latency (s)")
-    plt.xticks(rotation=20, ha="right")
+    plt.legend()
     plt.tight_layout()
-    latency_path = output_dir / "p99_under_load.png"
+    latency_path = output_dir / "p99_latency_vs_load.png"
     plt.savefig(latency_path)
     plt.close()
     written.append(latency_path)
 
     plt.figure(figsize=(10, 5))
-    plt.bar(scenarios, costs)
+    for sweep, rows in by_sweep.items():
+        ordered = sorted(rows, key=lambda row: row["arrival_rate_rps"])
+        plt.plot(
+            [row["arrival_rate_rps"] for row in ordered],
+            [row["p99_ttft_s"] or 0 for row in ordered],
+            marker="o",
+            label=sweep,
+        )
+    plt.xlabel("Offered load (RPS)")
+    plt.ylabel("P99 TTFT (s)")
+    plt.legend()
+    plt.tight_layout()
+    ttft_path = output_dir / "p99_ttft_vs_load.png"
+    plt.savefig(ttft_path)
+    plt.close()
+    written.append(ttft_path)
+
+    plt.figure(figsize=(10, 5))
+    labels = [f"{summary['sweep']} @ {summary['arrival_rate_rps']}rps" for summary in summaries]
+    costs = [summary["cost_per_1m_tokens_usd"] or 0 for summary in summaries]
+    plt.bar(labels, costs)
     plt.ylabel("Estimated cost per 1M tokens (USD)")
     plt.xticks(rotation=20, ha="right")
     plt.tight_layout()
@@ -171,6 +204,13 @@ def group_by_model(requests: list[dict[str, Any]]) -> dict[str, int]:
     for request in requests:
         counts[request.get("model") or "unknown"] += 1
     return dict(counts)
+
+
+def group_by_sweep(summaries: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for summary in summaries:
+        grouped[summary["sweep"]].append(summary)
+    return dict(grouped)
 
 
 def parse_args() -> argparse.Namespace:

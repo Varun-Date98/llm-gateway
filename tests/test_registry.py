@@ -1,5 +1,3 @@
-import asyncio
-
 import pytest
 
 from gateway.backends.registry import NoHealthyReplicaError, ReplicaPool
@@ -52,17 +50,10 @@ async def test_replica_pool_least_loaded_avoids_busy_replica() -> None:
     pool = ReplicaPool.from_config(load_config())
     busy_replica = pool.get("mock-small-0")
 
-    async def consume() -> None:
-        async for _ in busy_replica.generate(make_request(max_tokens=1)):
-            pass
-
-    task = asyncio.create_task(consume())
-    await asyncio.sleep(0)
-
+    assert busy_replica.reserve() is True
     assert busy_replica.in_flight == 1
     assert pool.least_loaded("small").replica_id == "mock-small-1"
-
-    await task
+    busy_replica.release()
 
 
 @pytest.mark.asyncio

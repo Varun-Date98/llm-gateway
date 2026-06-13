@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -87,12 +88,17 @@ class Scheduler:
         admission: AdmissionController,
         queue: PriorityRequestQueue | None = None,
         dispatch_interval_ms: int = 5,
+        default_service_time_ms: float = 250.0,
+        service_time_ewma_alpha: float = 0.2,
     ) -> None:
         self.pool = pool
         self.router = router
         self.admission = admission
         self.queue = queue or PriorityRequestQueue()
         self.dispatch_interval = dispatch_interval_ms / 1000.0
+        self.default_service_time_ms = default_service_time_ms
+        self.service_time_ewma_alpha = service_time_ewma_alpha
+        self._service_time_ewma_ms = default_service_time_ms
         self._running = False
         self._dispatch_task: asyncio.Task[None] | None = None
         self._active_tasks: set[asyncio.Task[None]] = set()
@@ -126,7 +132,7 @@ class Scheduler:
         result = self.admission.decide(
             queue_depth=self.queue.qsize(),
             has_capacity=self._has_capacity(request),
-            estimated_wait_ms=self._estimate_wait_ms(),
+            estimated_wait_ms=self._estimate_wait_ms(request),
         )
         metrics.record_admission(result.decision.value, result.reason)
 
@@ -142,7 +148,7 @@ class Scheduler:
         while self._running:
             item = await self.queue.get()
             try:
-                backend = await self._wait_for_backend(item.request)
+                backend = await self._wait_for_reserved_backend(item.request)
                 stream = self._stream_from_item(item)
                 task = asyncio.create_task(self._run_backend_stream(item, stream, backend))
                 self._active_tasks.add(task)
@@ -157,12 +163,16 @@ class Scheduler:
             raise TypeError("queued scheduler item is missing its stream handle")
         return item.payload
 
-    async def _wait_for_backend(self, request: GenerationRequest) -> Backend:
+    async def _wait_for_reserved_backend(self, request: GenerationRequest) -> Backend:
         while self._running:
             try:
-                return self.router.select(request, self.pool)
+                backend = self.router.select(request, self.pool)
             except NoHealthyReplicaError:
                 await asyncio.sleep(self.dispatch_interval)
+                continue
+            if backend.reserve():
+                return backend
+            await asyncio.sleep(self.dispatch_interval)
         raise SchedulerClosed("scheduler stopped before a backend became available")
 
     async def _run_backend_stream(
@@ -201,6 +211,9 @@ class Scheduler:
         except BaseException as error:
             await stream.fail(error)
         finally:
+            if stream.started_at is not None:
+                self._record_service_time((time.monotonic() - stream.started_at) * 1000.0)
+            backend.release()
             metrics.set_in_flight(
                 backend.model_id,
                 backend.replica_id,
@@ -220,7 +233,39 @@ class Scheduler:
             return False
         return True
 
-    def _estimate_wait_ms(self) -> float:
-        if self.queue.qsize() == 0:
+    def _estimate_wait_ms(self, request: GenerationRequest) -> float:
+        queue_depth = self.queue.qsize()
+        total_capacity = 0
+        available_slots = 0
+        for replica in self._capacity_replicas(request):
+            if not self.pool.is_healthy(replica.replica_id):
+                continue
+            max_concurrency = getattr(replica, "max_concurrency", 1)
+            total_capacity += max_concurrency
+            available_slots += max(0, max_concurrency - replica.in_flight)
+
+        if queue_depth == 0 and available_slots > 0:
             return 0.0
-        return self.queue.qsize() * self.dispatch_interval * 1000.0
+        if total_capacity <= 0:
+            return self._service_time_ewma_ms
+
+        queued_after_available = max(1, queue_depth + 1 - available_slots)
+        batches_until_service = math.ceil(queued_after_available / total_capacity)
+        return batches_until_service * self._service_time_ewma_ms
+
+    def _record_service_time(self, duration_ms: float) -> None:
+        alpha = self.service_time_ewma_alpha
+        self._service_time_ewma_ms = (
+            alpha * duration_ms + (1.0 - alpha) * self._service_time_ewma_ms
+        )
+
+    def _capacity_replicas(self, request: GenerationRequest) -> list[Backend]:
+        select_tier = getattr(self.router, "select_tier", None)
+        if callable(select_tier):
+            tier = select_tier(request, self.pool)
+            return self.pool.replicas_for_tier(tier)
+        return self.pool.replicas
+
+    @property
+    def service_time_ewma_ms(self) -> float:
+        return self._service_time_ewma_ms

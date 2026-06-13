@@ -22,6 +22,14 @@ class Backend(Protocol):
         """Return whether this replica can currently receive work."""
         ...
 
+    def reserve(self) -> bool:
+        """Reserve one concurrency slot before dispatching work."""
+        ...
+
+    def release(self) -> None:
+        """Release one previously reserved concurrency slot."""
+        ...
+
     @property
     def in_flight(self) -> int:
         """Active requests currently assigned to this backend."""

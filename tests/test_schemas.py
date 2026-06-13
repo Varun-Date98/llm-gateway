@@ -44,6 +44,12 @@ def test_backend_protocol_is_runtime_checkable() -> None:
         async def health(self) -> bool:
             return True
 
+        def reserve(self) -> bool:
+            return True
+
+        def release(self) -> None:
+            return None
+
         @property
         def in_flight(self) -> int:
             return 0

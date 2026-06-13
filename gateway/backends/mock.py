@@ -86,29 +86,34 @@ class MockBackend:
     async def health(self) -> bool:
         return self._healthy
 
-    async def generate(self, request: GenerationRequest) -> AsyncIterator[Token]:
+    def reserve(self) -> bool:
+        if not self.has_capacity:
+            return False
         self._in_flight += 1
+        return True
+
+    def release(self) -> None:
+        self._in_flight = max(0, self._in_flight - 1)
+
+    async def generate(self, request: GenerationRequest) -> AsyncIterator[Token]:
         completion_tokens = 0
-        try:
-            await asyncio.sleep(
-                self.latency_model.sample_ttft(request.prompt_tokens, self._in_flight)
+        await asyncio.sleep(
+            self.latency_model.sample_ttft(request.prompt_tokens, self._in_flight)
+        )
+        for index in range(request.max_tokens):
+            await asyncio.sleep(self.latency_model.sample_itl(self._in_flight))
+            completion_tokens = index + 1
+            yield Token(
+                text=self._token_text(index),
+                index=index,
+                model_id=self.model_id,
+                replica_id=self.replica_id,
+                request_id=request.request_id,
+                is_final=index == request.max_tokens - 1,
+                finish_reason="length" if index == request.max_tokens - 1 else None,
+                prompt_tokens=request.prompt_tokens,
+                completion_tokens=completion_tokens,
             )
-            for index in range(request.max_tokens):
-                await asyncio.sleep(self.latency_model.sample_itl(self._in_flight))
-                completion_tokens = index + 1
-                yield Token(
-                    text=self._token_text(index),
-                    index=index,
-                    model_id=self.model_id,
-                    replica_id=self.replica_id,
-                    request_id=request.request_id,
-                    is_final=index == request.max_tokens - 1,
-                    finish_reason="length" if index == request.max_tokens - 1 else None,
-                    prompt_tokens=request.prompt_tokens,
-                    completion_tokens=completion_tokens,
-                )
-        finally:
-            self._in_flight -= 1
 
     def _token_text(self, index: int) -> str:
         return "mock" if index == 0 else f" token-{index}"

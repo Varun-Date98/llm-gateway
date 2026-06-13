@@ -38,6 +38,7 @@ class VllmBackend:
         self.transport = transport
         self._in_flight = 0
         self._healthy = True
+        self._client = self._build_client()
 
     @classmethod
     def from_model_config(
@@ -72,54 +73,60 @@ class VllmBackend:
 
     async def health(self) -> bool:
         try:
-            async with self._client() as client:
-                response = await client.get(self.health_path)
-                if response.status_code == 404:
-                    response = await client.get("/v1/models")
-                self._healthy = response.status_code == 200
+            response = await self._client.get(self.health_path)
+            if response.status_code == 404:
+                response = await self._client.get("/v1/models")
+            self._healthy = response.status_code == 200
         except httpx.HTTPError:
             self._healthy = False
         return self._healthy
+
+    def reserve(self) -> bool:
+        if not self.has_capacity:
+            return False
+        self._in_flight += 1
+        return True
+
+    def release(self) -> None:
+        self._in_flight = max(0, self._in_flight - 1)
+
+    async def close(self) -> None:
+        await self._client.aclose()
 
     def generate(self, request: GenerationRequest) -> AsyncIterator[Token]:
         return self._generate(request)
 
     async def _generate(self, request: GenerationRequest) -> AsyncIterator[Token]:
-        self._in_flight += 1
         index = 0
         completion_tokens = 0
-        try:
-            async with self._client() as client:
-                async with client.stream(
-                    "POST",
-                    "/v1/chat/completions",
-                    json=self._payload(request),
-                ) as response:
-                    response.raise_for_status()
-                    async for line in response.aiter_lines():
-                        event = parse_sse_line(line)
-                        if event is None:
-                            continue
-                        if event == "[DONE]":
-                            break
-                        token_text, finish_reason = parse_chat_chunk(event)
-                        if not token_text and finish_reason is None:
-                            continue
-                        completion_tokens += 1 if token_text else 0
-                        yield Token(
-                            text=token_text,
-                            index=index,
-                            model_id=self.model_id,
-                            replica_id=self.replica_id,
-                            request_id=request.request_id,
-                            is_final=finish_reason is not None,
-                            finish_reason=finish_reason,
-                            prompt_tokens=request.prompt_tokens,
-                            completion_tokens=completion_tokens,
-                        )
-                        index += 1
-        finally:
-            self._in_flight -= 1
+        async with self._client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json=self._payload(request),
+        ) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                event = parse_sse_line(line)
+                if event is None:
+                    continue
+                if event == "[DONE]":
+                    break
+                token_text, finish_reason = parse_chat_chunk(event)
+                if not token_text and finish_reason is None:
+                    continue
+                completion_tokens += 1 if token_text else 0
+                yield Token(
+                    text=token_text,
+                    index=index,
+                    model_id=self.model_id,
+                    replica_id=self.replica_id,
+                    request_id=request.request_id,
+                    is_final=finish_reason is not None,
+                    finish_reason=finish_reason,
+                    prompt_tokens=request.prompt_tokens,
+                    completion_tokens=completion_tokens,
+                )
+                index += 1
 
     def _payload(self, request: GenerationRequest) -> dict[str, Any]:
         payload = dict(request.raw_request)
@@ -135,7 +142,7 @@ class VllmBackend:
             payload["user"] = request.user
         return payload
 
-    def _client(self) -> httpx.AsyncClient:
+    def _build_client(self) -> httpx.AsyncClient:
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else None
         return httpx.AsyncClient(
             base_url=self.endpoint,

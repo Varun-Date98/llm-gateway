@@ -15,8 +15,10 @@ class Scenario:
     duration_seconds: float
     workload: WorkloadKind = "short"
     max_tokens: int = 16
-    stream: bool = False
+    stream: bool = True
     priority: Literal["interactive", "batch"] = "interactive"
+    sweep: str = "default"
+    policy: str = "smart"
     max_concurrency: int | None = None
     tags: tuple[str, ...] = field(default_factory=tuple)
 
@@ -29,7 +31,13 @@ class Scenario:
             "max_tokens": self.max_tokens,
             "stream": self.stream,
             "priority": self.priority,
-            "metadata": {"scenario": self.name, "request_index": index},
+            "metadata": {
+                "scenario": self.name,
+                "request_index": index,
+                "sweep": self.sweep,
+                "policy": self.policy,
+                "workload": self.workload,
+            },
         }
 
 
@@ -56,30 +64,38 @@ def prompt_for(workload: WorkloadKind, index: int) -> str:
 
 def default_scenarios() -> list[Scenario]:
     return [
+        scenario
+        for sweep, workload, max_tokens in [
+            ("short_streaming", "short", 8),
+            ("shared_prefix_streaming", "shared_prefix", 8),
+            ("mixed_streaming", "mixed", 12),
+        ]
+        for scenario in streaming_sweep(sweep, workload, max_tokens=max_tokens)
+    ]
+
+
+def streaming_sweep(
+    sweep: str,
+    workload: WorkloadKind,
+    *,
+    max_tokens: int,
+    policy: str = "smart",
+    rates: tuple[int, ...] = (1, 2, 4, 8, 12),
+    duration_seconds: float = 5,
+) -> list[Scenario]:
+    return [
         Scenario(
-            name="mock_short_2rps",
-            arrival_rate_rps=2,
-            duration_seconds=5,
-            workload="short",
-            max_tokens=8,
-            tags=("smoke", "short"),
-        ),
-        Scenario(
-            name="mock_shared_prefix_4rps",
-            arrival_rate_rps=4,
-            duration_seconds=5,
-            workload="shared_prefix",
-            max_tokens=8,
-            tags=("prefix", "smoke"),
-        ),
-        Scenario(
-            name="mock_mixed_6rps",
-            arrival_rate_rps=6,
-            duration_seconds=5,
-            workload="mixed",
-            max_tokens=12,
-            tags=("mixed", "load"),
-        ),
+            name=f"{sweep}_{rate}rps",
+            arrival_rate_rps=rate,
+            duration_seconds=duration_seconds,
+            workload=workload,
+            max_tokens=max_tokens,
+            stream=True,
+            sweep=sweep,
+            policy=policy,
+            tags=(sweep, workload, "streaming"),
+        )
+        for rate in rates
     ]
 
 

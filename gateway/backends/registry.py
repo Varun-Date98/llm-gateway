@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections import defaultdict
 from collections.abc import Iterable
 
@@ -111,3 +112,14 @@ class ReplicaPool:
             tier: sum(replica.in_flight for replica in replicas)
             for tier, replicas in self._by_tier.items()
         }
+
+    async def close(self) -> None:
+        close_results = []
+        for replica in self._replicas:
+            close = getattr(replica, "close", None)
+            if callable(close):
+                result = close()
+                if inspect.isawaitable(result):
+                    close_results.append(result)
+        if close_results:
+            await asyncio.gather(*close_results, return_exceptions=True)

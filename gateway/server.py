@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -29,6 +30,7 @@ class GatewayRuntime:
     admission: AdmissionController
     queue: PriorityRequestQueue
     scheduler: Scheduler
+    health_task: asyncio.Task[None] | None = None
 
 
 def build_runtime(config_path: str | Path | None = None) -> GatewayRuntime:
@@ -52,6 +54,8 @@ def build_runtime(config_path: str | Path | None = None) -> GatewayRuntime:
         admission=admission,
         queue=queue,
         dispatch_interval_ms=config.scheduling.dispatch_interval_ms,
+        default_service_time_ms=config.admission.default_service_time_ms,
+        service_time_ewma_alpha=config.admission.service_time_ewma_alpha,
     )
     return GatewayRuntime(
         config=config,
@@ -84,11 +88,20 @@ def create_app(config_path: str | Path | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         runtime = build_runtime(config_path)
         app.state.gateway = runtime
+        await runtime.pool.refresh_health()
+        runtime.health_task = asyncio.create_task(refresh_health_loop(runtime))
         runtime.scheduler.start()
         try:
             yield
         finally:
             await runtime.scheduler.stop(drain=True)
+            if runtime.health_task is not None:
+                runtime.health_task.cancel()
+                try:
+                    await runtime.health_task
+                except asyncio.CancelledError:
+                    pass
+            await runtime.pool.close()
 
     app = FastAPI(title="LLM Gateway", version="0.1.0", lifespan=lifespan)
     register_routes(app)
@@ -108,6 +121,13 @@ def register_metrics_middleware(app: FastAPI) -> None:
             monotonic() - started,
         )
         return response
+
+
+async def refresh_health_loop(runtime: GatewayRuntime) -> None:
+    interval = runtime.config.health.refresh_interval_seconds
+    while True:
+        await asyncio.sleep(interval)
+        await runtime.pool.refresh_health()
 
 
 app = create_app()

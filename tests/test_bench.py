@@ -14,6 +14,13 @@ def test_default_scenarios_are_lookupable() -> None:
     assert scenarios
     assert scenario_by_name(scenarios[0].name) == scenarios[0]
     assert scenarios[0].request_count() > 0
+    assert all(scenario.stream for scenario in scenarios)
+    assert {scenario.arrival_rate_rps for scenario in scenarios} == {1, 2, 4, 8, 12}
+    assert {scenario.sweep for scenario in scenarios} == {
+        "short_streaming",
+        "shared_prefix_streaming",
+        "mixed_streaming",
+    }
 
 
 def test_estimate_prompt_tokens_matches_gateway_style() -> None:
@@ -66,7 +73,13 @@ def test_report_generation_writes_summary_files(tmp_path: Path) -> None:
   "metadata": {"base_url": "test"},
   "scenarios": [
     {
-      "scenario": {"name": "sample", "arrival_rate_rps": 1},
+      "scenario": {
+        "name": "sample",
+        "sweep": "sample_sweep",
+        "policy": "smart",
+        "workload": "short",
+        "arrival_rate_rps": 1
+      },
       "requests": [
         {
           "scenario": "sample",
@@ -92,7 +105,13 @@ def test_report_generation_writes_summary_files(tmp_path: Path) -> None:
         {
             "scenarios": [
                 {
-                    "scenario": {"name": "sample", "arrival_rate_rps": 1},
+                    "scenario": {
+                        "name": "sample",
+                        "sweep": "sample_sweep",
+                        "policy": "smart",
+                        "workload": "short",
+                        "arrival_rate_rps": 1,
+                    },
                     "requests": [
                         {
                             "status_code": 200,
@@ -110,4 +129,7 @@ def test_report_generation_writes_summary_files(tmp_path: Path) -> None:
 
     assert Path(outputs["summary_json"]).exists()
     assert Path(outputs["summary_markdown"]).exists()
+    assert "sample_sweep" in Path(outputs["summary_markdown"]).read_text(encoding="utf-8")
     assert summaries[0]["p99_latency_s"] == 0.1
+    assert summaries[0]["p99_ttft_s"] == 0.1
+    assert summaries[0]["sweep"] == "sample_sweep"
