@@ -1,0 +1,4 @@
+name: llm-gateway
+
+# Phase 6 fills this in with gateway, Prometheus, and Grafana services.
+services: {}
