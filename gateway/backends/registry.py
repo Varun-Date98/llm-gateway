@@ -6,6 +6,7 @@ from collections.abc import Iterable
 
 from gateway.backends.base import Backend
 from gateway.backends.mock import MockBackend
+from gateway.backends.vllm import VllmBackend
 from gateway.config import GatewayConfig
 
 
@@ -28,10 +29,17 @@ class ReplicaPool:
     def from_config(cls, config: GatewayConfig) -> ReplicaPool:
         replicas: list[Backend] = []
         for model in config.models.values():
-            if model.backend != "mock":
-                raise NotImplementedError("Phase 2 only supports mock backends")
             for replica_index in range(model.replicas):
-                replicas.append(MockBackend.from_model_config(model, replica_index=replica_index))
+                if model.backend == "mock":
+                    replicas.append(
+                        MockBackend.from_model_config(model, replica_index=replica_index)
+                    )
+                elif model.backend == "vllm":
+                    replicas.append(
+                        VllmBackend.from_model_config(model, replica_index=replica_index)
+                    )
+                else:
+                    raise NotImplementedError(f"unsupported backend: {model.backend}")
         return cls(replicas)
 
     @property

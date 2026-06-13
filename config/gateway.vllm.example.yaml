@@ -1,0 +1,48 @@
+models:
+  small:
+    id: TinyLlama/TinyLlama-1.1B-Chat-v1.0
+    tier: small
+    backend: vllm
+    endpoint: http://127.0.0.1:8001
+    replicas: 1
+    max_concurrency: 8
+    context_window: 2048
+    input_cost_per_1m: 0.05
+    output_cost_per_1m: 0.10
+  large:
+    id: meta-llama/Llama-3.1-8B-Instruct
+    tier: large
+    backend: vllm
+    endpoint: http://127.0.0.1:8002
+    replicas: 1
+    max_concurrency: 4
+    context_window: 8192
+    input_cost_per_1m: 0.25
+    output_cost_per_1m: 0.50
+
+routing:
+  difficulty:
+    strategy: heuristic
+    threshold: 0.6
+  within_tier: prefix_aware
+  prefix_affinity_max_load_ratio: 1.5
+
+admission:
+  max_queue_depth: 256
+  target_p99_ms: 2000
+  shed_when_queue_full: true
+
+scheduling:
+  priorities:
+    interactive: 0
+    batch: 1
+  dispatch_interval_ms: 5
+
+prefix_cache:
+  ttl_seconds: 300
+  max_entries: 10000
+  prefix_chars: 2048
+
+metrics:
+  enabled: true
+  path: /metrics

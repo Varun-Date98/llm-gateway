@@ -24,6 +24,9 @@ class ModelConfig(BaseModel):
     backend: Literal["mock", "vllm"] = "mock"
     replicas: int = Field(default=1, ge=1)
     endpoint: HttpUrl | None = None
+    api_key_env: str | None = None
+    request_timeout_seconds: float = Field(default=120.0, gt=0.0)
+    health_path: str = "/health"
     max_concurrency: int = Field(default=8, ge=1)
     context_window: int = Field(default=8192, ge=1)
     input_cost_per_1m: float = Field(default=0.0, ge=0.0)
@@ -37,6 +40,13 @@ class ModelConfig(BaseModel):
         if self.backend == "vllm" and self.endpoint is None:
             raise ValueError("vllm backends require an endpoint")
         return self
+
+    @field_validator("health_path")
+    @classmethod
+    def validate_health_path(cls, path: str) -> str:
+        if not path.startswith("/"):
+            raise ValueError("health_path must start with '/'")
+        return path
 
 
 class DifficultyRoutingConfig(BaseModel):
