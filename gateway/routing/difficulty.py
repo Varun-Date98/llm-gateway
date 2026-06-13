@@ -49,3 +49,7 @@ class DifficultyRouter:
         if self.within_tier_router is not None:
             return self.within_tier_router.select(request, pool, tier=tier)
         return pool.least_loaded(tier)
+
+    def record(self, request: GenerationRequest, backend: Backend) -> None:
+        if self.within_tier_router is not None:
+            self.within_tier_router.record(request, backend)
