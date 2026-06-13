@@ -9,6 +9,7 @@ __pycache__/
 .mypy_cache/
 .coverage
 htmlcov/
+.pytest_tmp/
 
 # Local config and secrets
 .env
